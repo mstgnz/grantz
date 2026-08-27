@@ -15,36 +15,24 @@ jobs:
         with:
           go-version: "1.24"
 
+      # Every step below is a Makefile target, so what runs here is what a contributor
+      # runs locally. Spelling the commands out in both places is how the two quietly
+      # diverge and a green `make check` stops meaning a green pipeline.
       - name: Verify formatting
-        run: |
-          unformatted=$(gofmt -l .)
-          if [ -n "$unformatted" ]; then
-            echo "These files need gofmt:"
-            echo "$unformatted"
-            exit 1
-          fi
+        run: make fmt-check
 
       - name: Vet
-        run: go vet ./...
+        run: make vet
 
-      - name: Test
-        run: go test -race -coverprofile=coverage.out ./...
-
-      - name: Coverage
-        run: go tool cover -func=coverage.out | tail -1
+      - name: Test and coverage
+        run: make cover
 
       # The module must require nothing. This is not cosmetic: a require line here is
       # forced onto every consumer through minimal version selection, so a test-only
       # driver would silently upgrade the driver of a project that already used it.
       # That is why the integration suite lives in its own module.
       - name: No dependencies
-        run: |
-          modules=$(go list -m all | grep -v '^github.com/mstgnz/grantz$' || true)
-          if [ -n "$modules" ]; then
-            echo "The module gained dependencies:"
-            echo "$modules"
-            exit 1
-          fi
+        run: make deps-check
 
   integration:
     runs-on: ubuntu-latest
@@ -61,6 +49,22 @@ jobs:
           --health-interval 2s
           --health-timeout 3s
           --health-retries 15
+
+      # 8.0 is the floor the store documents (the row-alias upsert needs 8.0.19), and the
+      # floor is the version worth testing: anything later is a superset.
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: grantz
+          MYSQL_USER: grantz
+          MYSQL_PASSWORD: grantz
+          MYSQL_DATABASE: grantz
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -pgrantz --silent"
+          --health-interval 3s
+          --health-timeout 5s
+          --health-retries 30
     steps:
       - uses: actions/checkout@v4
 
@@ -68,9 +72,14 @@ jobs:
         with:
           go-version: "1.24"
 
-      # Its own module, so the driver it needs never reaches the library's go.mod.
-      - name: Run the SQL suite against a real Postgres
-        working-directory: sqlstore/integration
-        env:
-          GRANTZ_TEST_DSN: postgres://grantz:grantz@localhost:5432/grantz?sslmode=disable
-        run: go test -tags=integration ./...
+      # Its own module, so the drivers it needs never reach the library's go.mod. Both
+      # engines in one run: the suite is written once and asserts the same behaviour on
+      # each, which is the only way a second dialect stays a dialect.
+      #
+      # Same make target a contributor runs, with the DSNs pointed at these services
+      # rather than at the ports docker-compose uses.
+      - name: Run the SQL suite against a real Postgres and a real MySQL
+        run: |
+          make test-integration \
+            POSTGRES_DSN='postgres://grantz:grantz@localhost:5432/grantz?sslmode=disable' \
+            MYSQL_DSN='grantz:grantz@tcp(127.0.0.1:3306)/grantz'

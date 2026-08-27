@@ -16,11 +16,12 @@ if err := authz.RequireCtx(ctx, "invoices.cancel"); err != nil {
 **Zero dependencies.** `go.mod` requires nothing, which matters more than it sounds: a
 require line in a library is forced onto every consumer through minimal version
 selection, so even a test-only driver would silently upgrade the driver of a project that
-already used one. The integration tests that need Postgres live in their own module for
+already used one. The integration tests that need a database live in their own module for
 exactly that reason.
 
 Your database sits behind a two-method interface, so GORM, sqlx and raw `database/sql`
-projects all fit without the library knowing which one you use.
+projects all fit without the library knowing which one you use. Postgres and MySQL stores
+come with it; anything else is one file you write.
 
 ```bash
 go get github.com/mstgnz/grantz
@@ -64,14 +65,16 @@ Precedence is fixed and not configurable:
 
 ## Quick start
 
-Run `migrations/001_init.sql`. Every table is prefixed `grantz_`, so it drops into a
-database that already has its own `users`, `roles` or `permissions` without colliding.
+Run the migration for your engine: `migrations/001_init_postgres.sql` on Postgres,
+`migrations/001_init_mysql.sql` on MySQL 8.0.19 or later. Every table is prefixed
+`grantz_`, so it drops into a database that already has its own `users`, `roles` or
+`permissions` without colliding.
 
 The library does not own users: `user_id` carries no foreign key, because where users
-live is your decision. It does not own the TYPE of a user id either. `001_init.sql`
-declares it `bigint`, which is the default; if your users are uuids, run
-`001_init_uuid.sql` instead. The two files differ only in those two columns, and a test
-fails if they ever drift apart in anything else.
+live is your decision. It does not own the TYPE of a user id either. The default schema
+declares it `bigint`; if your users are uuids, run the `_uuid` variant instead. The
+variants differ only in those two columns, and a test fails if they ever drift apart in
+anything else.
 
 Declare the catalogue in code, not in the database. A typo then fails at startup instead
 of becoming a permission nobody holds, and a new capability shows up in code review.
@@ -90,7 +93,7 @@ Wire it once:
 sqlDB, _ := gormDB.DB() // or your *sql.DB directly
 
 authz, err := grantz.New(grantz.Config{
-    Store:    sqlstore.New(sqlDB),
+    Store:    sqlstore.New(sqlDB), // sqlstore.NewMySQL(sqlDB) on MySQL
     UserID:   func(ctx context.Context) (int64, bool) {
         u, ok := ctx.Value(userKey).(*User)
         if !ok { return 0, false }
@@ -129,7 +132,31 @@ with no database, `httpserver` shows the middleware and the `/me/permissions` pa
 
 ```bash
 go run ./examples/basic
+go run ./examples/httpserver     # or: make demo, which runs it in a container on :8090
 ```
+
+## Engines
+
+`sqlstore` speaks Postgres and MySQL 8.0.19 or later. The unqualified constructors stay
+Postgres, which is what they meant before there was a second engine, so an existing
+project keeps compiling and keeps talking to the same database.
+
+| Engine   | Store                                                 | Schema                             |
+| -------- | ----------------------------------------------------- | ---------------------------------- |
+| Postgres | `sqlstore.New(db)`, `sqlstore.NewOf[T](db)`           | `migrations/001_init_postgres.sql` |
+| MySQL    | `sqlstore.NewMySQL(db)`, `sqlstore.NewMySQLOf[T](db)` | `migrations/001_init_mysql.sql`    |
+
+Both return the same `Store`. What differs is four mechanical things, all in one file:
+the placeholder syntax, the upsert, a cast on a NULL column, and quoting `key`, which
+MySQL reserves. Everything else, including the fail-closed decoding of a malformed field
+restriction, is the same code.
+
+The MySQL floor is 8.0.19 because of the upsert. The older `VALUES(col)` form would reach
+5.7 and MariaDB, and it is deprecated on its way out of MySQL; a permission catalogue is
+the last place to want a statement that starts warning and then stops parsing.
+
+The integration suite is written once and run against both engines, so a behaviour that
+holds on one and not the other fails here rather than in your project.
 
 ## User ids that are not int64
 
@@ -142,16 +169,17 @@ Anything else uses the `Of` forms:
 
 ```go
 authz, err := grantz.NewOf(grantz.ConfigOf[uuid.UUID]{
-    Store:  sqlstore.NewOf[uuid.UUID](sqlDB),
+    Store:  sqlstore.NewOf[uuid.UUID](sqlDB), // sqlstore.NewMySQLOf[uuid.UUID] on MySQL
     UserID: func(ctx context.Context) (uuid.UUID, bool) { ... },
 })
 
 authz.Can(ctx, someUUID, "invoices.cancel")
 ```
 
-Run `migrations/001_init_uuid.sql` for that, and pair it with the matching schema:
-the kit passes your id to the driver as a query argument, so the Go type and the column
-type have to agree.
+Run `migrations/001_init_postgres_uuid.sql` for that, or `migrations/001_init_mysql_uuid.sql` on
+MySQL, and pair it with the matching schema: the kit passes your id to the driver as a
+query argument, so the Go type and the column type have to agree. The MySQL variant uses
+`char(36)`, because `uuid.UUID` hands the driver its text form.
 
 The constraint is `comparable`, because the cache keys on the id. `int64`, `string` and
 `uuid.UUID` (which is `[16]byte`, and implements `driver.Valuer`) all qualify. A `[]byte`
@@ -231,8 +259,8 @@ type StoreOf[T comparable] interface {
 breaks deny precedence, and the symptom is that revoking one person's access does
 nothing.
 
-[`sqlstore`](sqlstore) is the Postgres implementation and is about 200 lines; another
-engine is a file that size, not a fork.
+[`sqlstore`](sqlstore) implements both shipped engines and is about 250 lines, most of it
+comments; a third engine is a file that size, not a fork.
 
 ## Failure modes it is built against
 
@@ -253,22 +281,48 @@ Each of those has a test named after it.
 ## Tests
 
 ```bash
-go test ./...                                    # no database needed
+make test              # unit tests, no database needed
+make check             # what CI's first job runs: gofmt, vet, race, dependency check
 
-docker compose up -d                             # for the SQL suite
+make db-up             # Postgres and MySQL, on ports 5433 and 3307
+make test-integration  # the SQL suite against both
+make test-mysql        # or one of them
+make db-down
+```
+
+`make help` lists the rest. Nothing needs make; it is a thin wrapper so that what CI runs
+and what you run cannot drift, and the pipeline calls the same targets. Without it:
+
+```bash
+go test ./...
+
+docker compose up -d
 cd sqlstore/integration
 GRANTZ_TEST_DSN="postgres://grantz:grantz@localhost:5433/grantz?sslmode=disable" \
+GRANTZ_TEST_MYSQL_DSN="grantz:grantz@tcp(localhost:3307)/grantz" \
   go test -tags=integration ./...
 ```
 
-The SQL suite is a separate module under `sqlstore/integration`, so the Postgres driver
-it needs never reaches this module's `go.mod` and therefore never reaches yours. CI
-enforces that with a `go list -m all` check on every push.
+Each engine skips when its own DSN is unset, so running one container is fine.
+
+The SQL suite is a separate module under `sqlstore/integration`, so the drivers it needs
+never reach this module's `go.mod` and therefore never reach yours. CI enforces that with
+a `go list -m all` check on every push.
 
 ## Schema
 
-Five tables, all prefixed. `migrations/001_init.sql` is the `bigint` schema,
-`migrations/001_init_uuid.sql` the same thing with `uuid` user ids; run one, never both.
+Five tables, all prefixed. Four schema files, one per engine and id type; run exactly
+one, never two.
+
+| File                                    | Engine   | `user_id`  |
+| --------------------------------------- | -------- | ---------- |
+| `migrations/001_init_postgres.sql`      | Postgres | `bigint`   |
+| `migrations/001_init_postgres_uuid.sql` | Postgres | `uuid`     |
+| `migrations/001_init_mysql.sql`         | MySQL    | `bigint`   |
+| `migrations/001_init_mysql_uuid.sql`    | MySQL    | `char(36)` |
+
+They define the same five tables with the same columns in the same order, and a test
+fails if they drift apart in anything but the type of the user id.
 
 | Table                     | Holds                                           |
 | ------------------------- | ----------------------------------------------- |
