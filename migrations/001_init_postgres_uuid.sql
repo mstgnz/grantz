@@ -1,15 +1,28 @@
--- grantz: authorization schema.
+-- grantz: authorization schema, Postgres, uuid user ids.
+--
+-- Four schema files ship with the kit, one per engine and user id type. Run exactly
+-- ONE of them, never two: they define the same tables and would collide.
+--
+--   001_init_postgres.sql        Postgres,      bigint user ids
+--   001_init_postgres_uuid.sql   Postgres,      uuid user ids   <- this file
+--   001_init_mysql.sql           MySQL 8.0.19+, bigint user ids
+--   001_init_mysql_uuid.sql      MySQL 8.0.19+, char(36) user ids
+--
+-- The four define the same five tables with the same columns in the same order. A
+-- test in this repository fails if they drift apart in anything but the type of the
+-- user id, because a column added to one and forgotten in another would only ever
+-- surface as a runtime SQL error, in whichever project happened to run that file.
+--
+-- Pair it with the Of forms: grantz.NewOf[uuid.UUID](...) and sqlstore.NewOf[uuid.UUID](db).
+-- Any comparable id type works, uuid is just the common one; a text column and a Go
+-- string would be the same file with text in place of uuid.
 --
 -- Every table is prefixed so the kit can be dropped into a database that already has
 -- its own users, roles or permissions tables without colliding.
 --
--- The kit deliberately does NOT own users. grantz_user_roles.user_id is a plain bigint
--- with no foreign key, because the host application decides what a user is and where it
--- lives. Add the FK yourself if your users table can support it.
---
--- If your users are uuids, run 001_init_uuid.sql instead of this file and wire the kit
--- with the Of forms (grantz.NewOf[uuid.UUID], sqlstore.NewOf[uuid.UUID]). The two files
--- differ only in the type of the two user_id columns; run one of them, never both.
+-- The kit deliberately does NOT own users: neither user_id carries a foreign key, because
+-- the host application decides what a user is and where it lives. Add the FK yourself if
+-- your users table can support it.
 
 -- ---------------------------------------------------------------------------
 -- 1. Permission catalogue.
@@ -81,7 +94,7 @@ CREATE TABLE IF NOT EXISTS grantz_role_permissions (
 -- it from growing a query builder.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS grantz_user_roles (
-    user_id    bigint    NOT NULL,
+    user_id    uuid      NOT NULL,
     role_id    integer   NOT NULL REFERENCES grantz_roles (id) ON DELETE CASCADE,
     scope      jsonb,
     created_at timestamp NOT NULL DEFAULT now(),
@@ -100,7 +113,7 @@ CREATE INDEX IF NOT EXISTS grantz_user_roles_user_idx
 -- so nobody has to reason about evaluation order.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS grantz_user_permissions (
-    user_id        bigint       NOT NULL,
+    user_id        uuid         NOT NULL,
     permission_key varchar(150) NOT NULL REFERENCES grantz_permissions (key) ON DELETE CASCADE,
     effect         varchar(10)  NOT NULL CHECK (effect IN ('allow', 'deny')),
     fields         jsonb,

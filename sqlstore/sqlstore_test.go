@@ -72,7 +72,9 @@ func TestDecodeScope(t *testing.T) {
 
 // TestNewReturnsStore is a compile-time guarantee more than a test: it pins that Store
 // satisfies grantz.Store, so a change to the interface breaks here rather than at the
-// call site in someone else's project.
+// call site in someone else's project. Both engines return the same type; only the SQL
+// behind it differs.
 func TestNewReturnsStore(t *testing.T) {
 	var _ grantz.Store = New(nil)
+	var _ grantz.Store = NewMySQL(nil)
 }

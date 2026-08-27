@@ -7,8 +7,8 @@ import "context"
 //
 // A GORM project, an sqlx project and a project on some other driver all satisfy this
 // with a thin adapter; sqlstore ships a database/sql implementation that covers the
-// first two, since both can hand over a *sql.DB. Swapping Postgres for something else
-// is a matter of writing one type, not of forking the kit.
+// first two, since both can hand over a *sql.DB, and speaks Postgres and MySQL. A third
+// engine is a matter of writing one type, not of forking the kit.
 type StoreOf[T comparable] interface {
 	// LoadUserGrants returns every grant that applies to a user, from both roles and
 	// user-level exceptions. Returning denials as well as allowances is deliberate: the

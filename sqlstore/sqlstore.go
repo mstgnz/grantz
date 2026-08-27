@@ -5,8 +5,10 @@
 // already has. That is the whole reason the kit splits the store out: the core package
 // stays on the standard library and every ORM is somebody else's decision.
 //
-// The SQL is Postgres (jsonb, $1 placeholders). Another engine needs its own Store,
-// which is a file this size, not a fork of the kit.
+// It ships SQL for Postgres and for MySQL 8.0.19+. The two differ in four mechanical
+// places, all of them in dialect.go; everything else, including the fail-closed decoding
+// of a malformed field restriction, is the same code on both engines. A third engine
+// implements grantz.StoreOf itself, which is a file this size, not a fork of the kit.
 package sqlstore
 
 import (
@@ -21,22 +23,44 @@ import (
 // StoreOf implements grantz.StoreOf on top of database/sql.
 type StoreOf[T comparable] struct {
 	db *sql.DB
+	// dialect carries the per-engine SQL. It is set by the constructors and never
+	// changes: a store is built for one engine and asking it about another is not a
+	// runtime decision anyone should be able to make.
+	dialect dialect
 }
 
 // Store is the int64 instantiation, which is what the bigint user_id column in
-// migrations/001_init.sql expects.
+// migrations/001_init_postgres.sql expects.
 type Store = StoreOf[int64]
 
-// New returns a Store over the given handle, for int64 user ids.
+// New returns a Postgres Store over the given handle, for int64 user ids.
+//
+// Postgres is what the unqualified name means, and it stays that way: this function
+// existed before the package spoke a second dialect, and a project that upgrades must not
+// find its store pointing at another engine. MySQL asks for it by name, below.
 func New(db *sql.DB) *Store { return NewOf[int64](db) }
 
-// NewOf returns a Store for any other user id type, e.g. NewOf[uuid.UUID](db) against
-// migrations/001_init_uuid.sql.
+// NewOf returns a Postgres Store for any other user id type, e.g. NewOf[uuid.UUID](db)
+// against migrations/001_init_postgres_uuid.sql.
 //
 // T is handed to the driver as a query argument, so it has to be something database/sql
 // accepts: a base type, or a type implementing driver.Valuer. uuid.UUID does.
 func NewOf[T comparable](db *sql.DB) *StoreOf[T] {
-	return &StoreOf[T]{db: db}
+	return &StoreOf[T]{db: db, dialect: postgresDialect}
+}
+
+// NewMySQL returns a MySQL Store over the given handle, for int64 user ids, against
+// migrations/001_init_mysql.sql.
+//
+// It needs MySQL 8.0.19 or later, for the row-alias upsert. See dialect.go for why that
+// floor rather than the older form that would also reach 5.7 and MariaDB.
+func NewMySQL(db *sql.DB) *Store { return NewMySQLOf[int64](db) }
+
+// NewMySQLOf is NewMySQL for a user id type other than int64, e.g.
+// NewMySQLOf[uuid.UUID](db) against migrations/001_init_mysql_uuid.sql, where the column
+// is char(36) because uuid.UUID hands the driver its string form.
+func NewMySQLOf[T comparable](db *sql.DB) *StoreOf[T] {
+	return &StoreOf[T]{db: db, dialect: mysqlDialect}
 }
 
 // LoadUserGrants reads every grant that applies to a user in one round trip.
@@ -49,28 +73,14 @@ func NewOf[T comparable](db *sql.DB) *StoreOf[T] {
 // how an administrator suspends access, and it has to take effect without every caller
 // remembering to check.
 func (s *StoreOf[T]) LoadUserGrants(ctx context.Context, userID T) ([]grantz.Grant, error) {
-	const query = `
-SELECT rp.permission_key,
-       'allow'   AS effect,
-       rp.fields,
-       ur.scope,
-       true      AS from_role
-  FROM grantz_user_roles ur
-  JOIN grantz_roles r            ON r.id = ur.role_id AND r.active
-  JOIN grantz_role_permissions rp ON rp.role_id = r.id
- WHERE ur.user_id = $1
+	// The same id fills every placeholder. Postgres reuses $1 and wants it once, MySQL
+	// spells both halves of the union with ? and wants it twice; the dialect says which.
+	args := make([]any, s.dialect.userIDArgs)
+	for i := range args {
+		args[i] = userID
+	}
 
-UNION ALL
-
-SELECT up.permission_key,
-       up.effect,
-       up.fields,
-       NULL::jsonb AS scope,
-       false       AS from_role
-  FROM grantz_user_permissions up
- WHERE up.user_id = $1`
-
-	rows, err := s.db.QueryContext(ctx, query, userID)
+	rows, err := s.db.QueryContext(ctx, s.dialect.loadGrants, args...)
 	if err != nil {
 		return nil, fmt.Errorf("grantz/sqlstore: load grants: %w", err)
 	}
@@ -125,29 +135,20 @@ func (s *StoreOf[T]) SyncPermissions(ctx context.Context, perms []grantz.Permiss
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	const upsert = `
-INSERT INTO grantz_permissions (key, resource, action, description, has_fields)
-VALUES ($1, $2, $3, $4, $5)
-ON CONFLICT (key) DO UPDATE
-   SET resource    = EXCLUDED.resource,
-       action      = EXCLUDED.action,
-       description = EXCLUDED.description,
-       has_fields  = EXCLUDED.has_fields`
-
 	declared := make(map[string]struct{}, len(perms))
 	for _, p := range perms {
 		if err := p.Validate(); err != nil {
 			return nil, err
 		}
 		declared[p.Key] = struct{}{}
-		if _, err := tx.ExecContext(ctx, upsert,
+		if _, err := tx.ExecContext(ctx, s.dialect.upsertPermission,
 			p.Key, p.Resource(), p.Action(), p.Description, p.HasFields,
 		); err != nil {
 			return nil, fmt.Errorf("grantz/sqlstore: upsert %q: %w", p.Key, err)
 		}
 	}
 
-	rows, err := tx.QueryContext(ctx, `SELECT key FROM grantz_permissions`)
+	rows, err := tx.QueryContext(ctx, s.dialect.listPermissionKeys)
 	if err != nil {
 		return nil, fmt.Errorf("grantz/sqlstore: list permissions: %w", err)
 	}
