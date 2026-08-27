@@ -13,7 +13,7 @@ go 1.24
 
 require (
 	github.com/lib/pq v1.12.3
-	github.com/mstgnz/grantz v0.1.0
+	github.com/mstgnz/grantz v0.2.0
 )
 
 require github.com/google/uuid v1.6.0
