@@ -16,6 +16,8 @@ require (
 	github.com/mstgnz/grantz v0.1.0
 )
 
+require github.com/google/uuid v1.6.0
+
 // Test against the working tree rather than the published tag, so a change to the store
 // is exercised before it is tagged.
 replace github.com/mstgnz/grantz => ../..

@@ -1,15 +1,20 @@
--- grantz: authorization schema.
+-- grantz: authorization schema, uuid user id variant.
+--
+-- Identical to 001_init.sql except for the type of the two columns that carry a user id:
+-- grantz_user_roles.user_id and grantz_user_permissions.user_id. The table names are the
+-- same, so run ONE of the two files, never both.
+--
+-- Pair it with the Of forms: grantz.NewOf[uuid.UUID](...) and sqlstore.NewOf[uuid.UUID](db).
+-- Any comparable id type works, uuid is just the common one; a text column and a Go
+-- string would be the same file with text in place of uuid.
+--
+-- The kit deliberately does NOT own users: neither user_id carries a foreign key, because
+-- the host application decides what a user is and where it lives. Add the FK yourself if
+-- your users table can support it.
 --
 -- Every table is prefixed so the kit can be dropped into a database that already has
 -- its own users, roles or permissions tables without colliding.
 --
--- The kit deliberately does NOT own users. grantz_user_roles.user_id is a plain bigint
--- with no foreign key, because the host application decides what a user is and where it
--- lives. Add the FK yourself if your users table can support it.
---
--- If your users are uuids, run 001_init_uuid.sql instead of this file and wire the kit
--- with the Of forms (grantz.NewOf[uuid.UUID], sqlstore.NewOf[uuid.UUID]). The two files
--- differ only in the type of the two user_id columns; run one of them, never both.
 
 -- ---------------------------------------------------------------------------
 -- 1. Permission catalogue.
@@ -81,7 +86,7 @@ CREATE TABLE IF NOT EXISTS grantz_role_permissions (
 -- it from growing a query builder.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS grantz_user_roles (
-    user_id    bigint    NOT NULL,
+    user_id    uuid      NOT NULL,
     role_id    integer   NOT NULL REFERENCES grantz_roles (id) ON DELETE CASCADE,
     scope      jsonb,
     created_at timestamp NOT NULL DEFAULT now(),
@@ -100,7 +105,7 @@ CREATE INDEX IF NOT EXISTS grantz_user_roles_user_idx
 -- so nobody has to reason about evaluation order.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS grantz_user_permissions (
-    user_id        bigint       NOT NULL,
+    user_id        uuid         NOT NULL,
     permission_key varchar(150) NOT NULL REFERENCES grantz_permissions (key) ON DELETE CASCADE,
     effect         varchar(10)  NOT NULL CHECK (effect IN ('allow', 'deny')),
     fields         jsonb,

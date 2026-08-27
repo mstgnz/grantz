@@ -23,7 +23,7 @@ type ErrorWriter func(w http.ResponseWriter, r *http.Request, err error)
 // at all", which is the coarse half of authorization. Whether they may perform it on
 // THIS record needs the record, which the middleware has not loaded yet; that check
 // belongs in the handler or the service, after the row is read.
-func (a *Authorizer) Middleware(key string, onError ErrorWriter) func(http.Handler) http.Handler {
+func (a *AuthorizerOf[T]) Middleware(key string, onError ErrorWriter) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if err := a.RequireCtx(r.Context(), key); err != nil {

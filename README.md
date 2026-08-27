@@ -67,8 +67,11 @@ Precedence is fixed and not configurable:
 Run `migrations/001_init.sql`. Every table is prefixed `grantz_`, so it drops into a
 database that already has its own `users`, `roles` or `permissions` without colliding.
 
-The library does not own users: `grantz_user_roles.user_id` is a plain `bigint` with no
-foreign key, because where users live is your decision.
+The library does not own users: `user_id` carries no foreign key, because where users
+live is your decision. It does not own the TYPE of a user id either. `001_init.sql`
+declares it `bigint`, which is the default; if your users are uuids, run
+`001_init_uuid.sql` instead. The two files differ only in those two columns, and a test
+fails if they ever drift apart in anything else.
 
 Declare the catalogue in code, not in the database. A typo then fails at startup instead
 of becoming a permission nobody holds, and a new capability shows up in code review.
@@ -127,6 +130,32 @@ with no database, `httpserver` shows the middleware and the `/me/permissions` pa
 ```bash
 go run ./examples/basic
 ```
+
+## User ids that are not int64
+
+The user id is a type parameter. `int64` is the default and reads with no parameter at
+all: `grantz.Config`, `grantz.New`, `grantz.Authorizer`, `sqlstore.New`. Those names are
+aliases for the `int64` instantiation, not wrappers around it, so a project written
+before the kit was generic keeps compiling untouched.
+
+Anything else uses the `Of` forms:
+
+```go
+authz, err := grantz.NewOf(grantz.ConfigOf[uuid.UUID]{
+    Store:  sqlstore.NewOf[uuid.UUID](sqlDB),
+    UserID: func(ctx context.Context) (uuid.UUID, bool) { ... },
+})
+
+authz.Can(ctx, someUUID, "invoices.cancel")
+```
+
+Run `migrations/001_init_uuid.sql` for that, and pair it with the matching schema:
+the kit passes your id to the driver as a query argument, so the Go type and the column
+type have to agree.
+
+The constraint is `comparable`, because the cache keys on the id. `int64`, `string` and
+`uuid.UUID` (which is `[16]byte`, and implements `driver.Valuer`) all qualify. A `[]byte`
+id does not, and has to be wrapped in an array type first.
 
 ## Field restrictions
 
@@ -192,8 +221,8 @@ only decides what gets drawn.
 Two methods:
 
 ```go
-type Store interface {
-    LoadUserGrants(ctx context.Context, userID int64) ([]Grant, error)
+type StoreOf[T comparable] interface {
+    LoadUserGrants(ctx context.Context, userID T) ([]Grant, error)
     SyncPermissions(ctx context.Context, perms []Permission) (orphans []string, err error)
 }
 ```
@@ -238,7 +267,8 @@ enforces that with a `go list -m all` check on every push.
 
 ## Schema
 
-Five tables, all prefixed:
+Five tables, all prefixed. `migrations/001_init.sql` is the `bigint` schema,
+`migrations/001_init_uuid.sql` the same thing with `uuid` user ids; run one, never both.
 
 | Table                     | Holds                                           |
 | ------------------------- | ----------------------------------------------- |

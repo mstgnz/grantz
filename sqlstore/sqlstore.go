@@ -18,14 +18,25 @@ import (
 	"github.com/mstgnz/grantz"
 )
 
-// Store implements grantz.Store on top of database/sql.
-type Store struct {
+// StoreOf implements grantz.StoreOf on top of database/sql.
+type StoreOf[T comparable] struct {
 	db *sql.DB
 }
 
-// New returns a Store over the given handle.
-func New(db *sql.DB) *Store {
-	return &Store{db: db}
+// Store is the int64 instantiation, which is what the bigint user_id column in
+// migrations/001_init.sql expects.
+type Store = StoreOf[int64]
+
+// New returns a Store over the given handle, for int64 user ids.
+func New(db *sql.DB) *Store { return NewOf[int64](db) }
+
+// NewOf returns a Store for any other user id type, e.g. NewOf[uuid.UUID](db) against
+// migrations/001_init_uuid.sql.
+//
+// T is handed to the driver as a query argument, so it has to be something database/sql
+// accepts: a base type, or a type implementing driver.Valuer. uuid.UUID does.
+func NewOf[T comparable](db *sql.DB) *StoreOf[T] {
+	return &StoreOf[T]{db: db}
 }
 
 // LoadUserGrants reads every grant that applies to a user in one round trip.
@@ -37,7 +48,7 @@ func New(db *sql.DB) *Store {
 // Inactive roles are filtered here rather than in the authorizer: deactivating a role is
 // how an administrator suspends access, and it has to take effect without every caller
 // remembering to check.
-func (s *Store) LoadUserGrants(ctx context.Context, userID int64) ([]grantz.Grant, error) {
+func (s *StoreOf[T]) LoadUserGrants(ctx context.Context, userID T) ([]grantz.Grant, error) {
 	const query = `
 SELECT rp.permission_key,
        'allow'   AS effect,
@@ -107,7 +118,7 @@ SELECT up.permission_key,
 // Orphans are reported, never deleted. Deleting would cascade to grantz_role_permissions
 // and silently wipe an administrator's configuration the first time an older binary
 // starts up. Removing a permission for real is a migration someone writes on purpose.
-func (s *Store) SyncPermissions(ctx context.Context, perms []grantz.Permission) ([]string, error) {
+func (s *StoreOf[T]) SyncPermissions(ctx context.Context, perms []grantz.Permission) ([]string, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("grantz/sqlstore: begin: %w", err)

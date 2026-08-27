@@ -153,7 +153,7 @@ func TestMiddlewareDeniesOnStoreFailure(t *testing.T) {
 // TestCacheEntryExpires drives the clock rather than sleeping, so the TTL path is covered
 // without making the suite slow.
 func TestCacheEntryExpires(t *testing.T) {
-	cache := NewMemoryCache(time.Minute).(*memoryCache)
+	cache := NewMemoryCache(time.Minute).(*memoryCache[int64])
 	now := time.Now()
 	cache.now = func() time.Time { return now }
 	ctx := context.Background()
