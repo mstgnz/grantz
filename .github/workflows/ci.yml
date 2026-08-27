@@ -33,18 +33,16 @@ jobs:
       - name: Coverage
         run: go tool cover -func=coverage.out | tail -1
 
-      # Nothing third-party may enter the library's own build. That is the pitch:
-      # importing grantz adds nothing to a consumer's binary.
-      #
-      # Checked with `go list -deps` on the packages themselves rather than `go list -m
-      # all`, because the module list includes the test-only Postgres driver, which the
-      # integration suite needs and no consumer ever compiles.
-      - name: No runtime dependencies
+      # The module must require nothing. This is not cosmetic: a require line here is
+      # forced onto every consumer through minimal version selection, so a test-only
+      # driver would silently upgrade the driver of a project that already used it.
+      # That is why the integration suite lives in its own module.
+      - name: No dependencies
         run: |
-          deps=$(go list -deps . ./sqlstore | grep -E '^[^/]+\.[^/]+/' | grep -v '^github.com/mstgnz/grantz' || true)
-          if [ -n "$deps" ]; then
-            echo "The library's build pulled in third-party packages:"
-            echo "$deps"
+          modules=$(go list -m all | grep -v '^github.com/mstgnz/grantz$' || true)
+          if [ -n "$modules" ]; then
+            echo "The module gained dependencies:"
+            echo "$modules"
             exit 1
           fi
 
@@ -70,7 +68,9 @@ jobs:
         with:
           go-version: "1.24"
 
+      # Its own module, so the driver it needs never reaches the library's go.mod.
       - name: Run the SQL suite against a real Postgres
+        working-directory: sqlstore/integration
         env:
           GRANTZ_TEST_DSN: postgres://grantz:grantz@localhost:5432/grantz?sslmode=disable
-        run: go test -tags=integration ./sqlstore/
+        run: go test -tags=integration ./...

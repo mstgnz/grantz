@@ -1,18 +1,22 @@
 //go:build integration
 
-// These tests need a real Postgres, because what they check is the SQL itself: the union
-// of role grants with user exceptions, the active-role filter, and the upsert. A mock
-// would only prove that the strings in this file match the strings in the other one.
+// Package integration exercises sqlstore against a real Postgres, because what these
+// tests check is the SQL itself: the union of role grants with user exceptions, the
+// active-role filter, and the upsert. A mock would only prove that the strings in this
+// file match the strings in the other one.
 //
-// Run them with a database and the tag:
+// This is a SEPARATE MODULE, and that is the whole point. The tests need a Postgres
+// driver, and a test dependency in the library's own go.mod is not free: Go's minimal
+// version selection would push that driver version onto every consumer. A project
+// already on lib/pq would find its driver upgraded by importing an authorization
+// library. Keeping the driver here means the published grantz module requires nothing.
+//
+// Run it with a database:
 //
 //	docker compose up -d
 //	GRANTZ_TEST_DSN="postgres://grantz:grantz@localhost:5433/grantz?sslmode=disable" \
-//	  go test -tags=integration ./sqlstore/
-//
-// The driver is a test-only dependency; nothing in the library imports it, which is what
-// keeps the published module free of one.
-package sqlstore
+//	  go test -tags=integration ./sqlstore/integration/
+package integration
 
 import (
 	"context"
@@ -22,6 +26,7 @@ import (
 
 	_ "github.com/lib/pq"
 	"github.com/mstgnz/grantz"
+	"github.com/mstgnz/grantz/sqlstore"
 )
 
 func testDB(t *testing.T) *sql.DB {
@@ -41,7 +46,7 @@ func testDB(t *testing.T) *sql.DB {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
-	schema, err := os.ReadFile("../migrations/001_init.sql")
+	schema, err := os.ReadFile("../../migrations/001_init.sql")
 	if err != nil {
 		t.Fatalf("read schema: %v", err)
 	}
@@ -79,7 +84,7 @@ func seed(t *testing.T, db *sql.DB, stmts ...string) {
 // symptom would be that revoking one person's access silently does nothing.
 func TestLoadUserGrantsUnionsRolesAndExceptions(t *testing.T) {
 	db := testDB(t)
-	store := New(db)
+	store := sqlstore.New(db)
 
 	seed(t, db,
 		`INSERT INTO grantz_permissions (key, resource, action) VALUES
@@ -120,7 +125,7 @@ func TestLoadUserGrantsUnionsRolesAndExceptions(t *testing.T) {
 // to take effect in the query rather than relying on every caller to remember.
 func TestInactiveRoleIsIgnored(t *testing.T) {
 	db := testDB(t)
-	store := New(db)
+	store := sqlstore.New(db)
 
 	seed(t, db,
 		`INSERT INTO grantz_permissions (key, resource, action) VALUES ('invoices.create', 'invoices', 'create')`,
@@ -141,7 +146,7 @@ func TestInactiveRoleIsIgnored(t *testing.T) {
 // TestFieldsAndScopeRoundTrip through jsonb and back.
 func TestFieldsAndScopeRoundTrip(t *testing.T) {
 	db := testDB(t)
-	store := New(db)
+	store := sqlstore.New(db)
 
 	seed(t, db,
 		`INSERT INTO grantz_permissions (key, resource, action, has_fields) VALUES
@@ -177,7 +182,7 @@ func TestFieldsAndScopeRoundTrip(t *testing.T) {
 // older binary would silently wipe an administrator's configuration.
 func TestSyncPermissionsUpsertsAndReportsOrphans(t *testing.T) {
 	db := testDB(t)
-	store := New(db)
+	store := sqlstore.New(db)
 	ctx := context.Background()
 
 	if _, err := store.SyncPermissions(ctx, []grantz.Permission{

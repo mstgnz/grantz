@@ -13,12 +13,14 @@ if err := authz.RequireCtx(ctx, "invoices.cancel"); err != nil {
 }
 ```
 
-No runtime dependencies: importing this adds nothing to your build. Your database sits
-behind a two-method interface, so GORM, sqlx and raw `database/sql` projects all fit
-without the library knowing which one you use.
+**Zero dependencies.** `go.mod` requires nothing, which matters more than it sounds: a
+require line in a library is forced onto every consumer through minimal version
+selection, so even a test-only driver would silently upgrade the driver of a project that
+already used one. The integration tests that need Postgres live in their own module for
+exactly that reason.
 
-(`go.mod` lists a Postgres driver. It is used only by the build-tagged integration tests
-and never enters a consumer's build; Go does not propagate test dependencies.)
+Your database sits behind a two-method interface, so GORM, sqlx and raw `database/sql`
+projects all fit without the library knowing which one you use.
 
 ```bash
 go get github.com/mstgnz/grantz
@@ -223,14 +225,16 @@ Each of those has a test named after it.
 
 ```bash
 go test ./...                                    # no database needed
+
 docker compose up -d                             # for the SQL suite
+cd sqlstore/integration
 GRANTZ_TEST_DSN="postgres://grantz:grantz@localhost:5433/grantz?sslmode=disable" \
-  go test -tags=integration ./sqlstore/
+  go test -tags=integration ./...
 ```
 
-The SQL suite sits behind a build tag and needs a database; everything else runs on its
-own. The Postgres driver it uses never enters a consumer's build, and CI enforces that
-with a `go list -deps` check.
+The SQL suite is a separate module under `sqlstore/integration`, so the Postgres driver
+it needs never reaches this module's `go.mod` and therefore never reaches yours. CI
+enforces that with a `go list -m all` check on every push.
 
 ## Schema
 
